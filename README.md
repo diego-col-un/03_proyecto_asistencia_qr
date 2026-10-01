@@ -1,13 +1,13 @@
-# 🏷️ [NOMBRE DEL EQUIPO] — Proyecto [NN]
+# 🏷️ [Sistema de asistencia con QR (serverless)] — Proyecto [03]
 
 > **Ficha del caso** — reemplaza este archivo: es la carta de presentación de tu equipo y lo primero que verá el panel en la sustentación.
 
 | Campo | Valor |
 |---|---|
-| Proyecto | [NN — nombre] |
-| Integrantes | [nombres y códigos] |
-| URL demo | https://... |
-| Costo mensual real | USD ... (objetivo: USD ...) |
+| Proyecto | [03 · Sistema de asistencia con QR (serverless)] |
+| Integrantes | [Diego Fernando Aristizábal Gutiérrez 1055751123, ] |
+| URL demo | https://...|
+| Costo mensual real | USD ... (objetivo: < 1 USD) |
 | Despliegue | `aws cloudformation deploy --template-file iac/main.yaml --stack-name gtn-[equipo] --capabilities CAPABILITY_NAMED_IAM` |
 
 ## 🏗️ Arquitectura
