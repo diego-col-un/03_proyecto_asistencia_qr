@@ -1,6 +1,6 @@
 # 🏷️ [Sistema de asistencia con QR (serverless)] — Proyecto [03]
 
-> **Ficha del caso** — reemplaza este archivo: es la carta de presentación de tu equipo y lo primero que verá el panel en la sustentación.
+> **Ficha del caso** — Controlar asistencia a laboratorios consume 10 minutos de cada sesión en llamado a lista. La coordinación quiere que el estudiante escanee un QR único por sesión y la asistencia quede registrada al instante con reporte automático. No quieren servidores: las clases son 2 días a la semana y el resto del tiempo el sistema estaría desperdiciado.
 
 | Campo | Valor |
 |---|---|
