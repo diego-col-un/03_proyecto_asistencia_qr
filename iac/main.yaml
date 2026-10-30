@@ -1,7 +1,11 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  Plantilla inicial — GTN 2026-2. Reemplaza/amplía: este ejemplo crea red básica
-  y un bucket con los tags obligatorios. Organiza el proyecto en capas si crece.
+  Sistema de asistencia con QR (serverless) - GTN 2026-2.
+  Una seccion por integrante. Solo servicios serverless, sin EC2.
+
+# =============================================================================
+# PARAMETROS (dueno: A)
+# =============================================================================
 Parameters:
   Ambiente:
     Type: String
@@ -10,42 +14,100 @@ Parameters:
   NombreEquipo:
     Type: String
     Description: nombre corto del equipo (aparece en los nombres de recursos)
+    AllowedPattern: "^[a-z0-9-]{3,20}$"
+    ConstraintDescription: minusculas, numeros y guiones (3 a 20 caracteres)
+  ThrottleRate:
+    Type: Number
+    Default: 5
+    Description: solicitudes por segundo permitidas en la API (proteccion contra abuso)
+  ThrottleBurst:
+    Type: Number
+    Default: 10
+    Description: rafaga maxima de solicitudes en la API
+
 Resources:
-  VPC:
-    Type: AWS::EC2::VPC
+  # ===========================================================================
+  # BASE COMPARTIDA: API Gateway (dueno: A)
+  # B y C cuelgan sus rutas de esta misma API con !Ref Api
+  # ===========================================================================
+  Api:
+    Type: AWS::ApiGatewayV2::Api
     Properties:
-      CidrBlock: 10.0.0.0/16
-      EnableDnsSupport: true
-      EnableDnsHostnames: true
+      Name: !Sub "gtn-${NombreEquipo}-api"
+      ProtocolType: HTTP
+      # Las paginas viven en S3 (otro origen), por eso se necesita CORS.
+      # TODO (semana 3): restringir AllowOrigins a la URL real de las paginas.
+      CorsConfiguration:
+        AllowOrigins: ["*"]
+        AllowMethods: [GET, POST, OPTIONS]
+        AllowHeaders: [content-type, x-api-secret]
+        MaxAge: 300
+      Tags:
+        Curso: GTN-2026-2
+        Equipo: !Ref NombreEquipo
+        Proyecto: asistencia-qr
+        Ambiente: !Ref Ambiente
+
+  ApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref Api
+      StageName: $default
+      AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingRateLimit: !Ref ThrottleRate
+        ThrottlingBurstLimit: !Ref ThrottleBurst
+      Tags:
+        Curso: GTN-2026-2
+        Equipo: !Ref NombreEquipo
+        Proyecto: asistencia-qr
+        Ambiente: !Ref Ambiente
+
+  # ===========================================================================
+  # SESIONES (dueno: A) - HU-01
+  # Lambda crear-sesion, rol IAM y ruta POST /sesiones: se agregan en semana 2
+  # ===========================================================================
+  TablaSesiones:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "gtn-${NombreEquipo}-sesiones"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - {AttributeName: sessionId, AttributeType: S}
+      KeySchema:
+        - {AttributeName: sessionId, KeyType: HASH}
+      # OJO: el TTL de DynamoDB borra con retraso (puede tardar horas).
+      # La validacion de expiracion NO debe depender del borrado: se compara
+      # expiresAt con la hora actual.
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
       Tags:
         - {Key: Curso, Value: GTN-2026-2}
         - {Key: Equipo, Value: !Ref NombreEquipo}
+        - {Key: Proyecto, Value: asistencia-qr}
         - {Key: Ambiente, Value: !Ref Ambiente}
-  SubnetPublica:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref VPC
-      CidrBlock: 10.0.1.0/24
-      MapPublicIpOnLaunch: true
-      AvailabilityZone: !Select [0, !GetAZs ""]
-      Tags:
-        - {Key: Curso, Value: GTN-2026-2}
-        - {Key: Equipo, Value: !Ref NombreEquipo}
-  BucketDatos:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketName: !Sub "gtn-2026-2-${NombreEquipo}-datos"
-      VersioningConfiguration: {Status: Enabled}
-      PublicAccessBlockConfiguration:
-        BlockPublicAcls: true
-        BlockPublicPolicy: true
-        IgnorePublicAcls: true
-        RestrictPublicBuckets: true
-      Tags:
-        - {Key: Curso, Value: GTN-2026-2}
-        - {Key: Equipo, Value: !Ref NombreEquipo}
-        - {Key: Proyecto, Value: proyecto-nn}
-        - {Key: Ambiente, Value: !Ref Ambiente}
+
+  # ===========================================================================
+  # REGISTRO DE ASISTENCIA (dueno: B) - HU-02
+  # Tabla Asistencias, Lambda registrar-asistencia, ruta POST /asistencias
+  # ===========================================================================
+
+  # ===========================================================================
+  # REPORTES Y COSTOS (dueno: C) - HU-03 / HU-04
+  # Bucket de reportes, EventBridge, Lambda generar-reporte, ruta GET /reportes
+  # ===========================================================================
+
 Outputs:
-  VPCId: {Value: !Ref VPC}
-  BucketDatos: {Value: !Ref BucketDatos}
+  ApiUrl:
+    Description: URL base de la API (B y C la usan para sus rutas)
+    Value: !GetAtt Api.ApiEndpoint
+  ApiId:
+    Description: Id de la API HTTP
+    Value: !Ref Api
+  TablaSesionesNombre:
+    Description: Nombre de la tabla Sesiones (B la usa para validar tokens)
+    Value: !Ref TablaSesiones
+  TablaSesionesArn:
+    Description: ARN de la tabla Sesiones (para politicas IAM de B)
+    Value: !GetAtt TablaSesiones.Arn
