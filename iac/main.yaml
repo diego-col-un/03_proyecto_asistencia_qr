@@ -2,6 +2,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   Sistema de asistencia con QR (serverless) - GTN 2026-2.
   Una seccion por integrante. Solo servicios serverless, sin EC2.
+  Se despliega con scripts/deploy.sh (empaqueta el codigo de las Lambdas).
 
 # =============================================================================
 # PARAMETROS (dueno: A)
@@ -16,6 +17,26 @@ Parameters:
     Description: nombre corto del equipo (aparece en los nombres de recursos)
     AllowedPattern: "^[a-z0-9-]{3,20}$"
     ConstraintDescription: minusculas, numeros y guiones (3 a 20 caracteres)
+  NombreRolLambda:
+    Type: String
+    Default: LabRole
+    Description: >
+      Rol IAM existente que usaran las Lambdas. En AWS Academy Learner Lab no se
+      pueden crear roles, se usa LabRole.
+  ScanBaseUrl:
+    Type: String
+    Default: "https://example.com/estudiante/index.html"
+    Description: >
+      URL de la pagina del estudiante (la define B). El QR codifica
+      <ScanBaseUrl>?s=<sessionId>.
+  DuracionPorDefecto:
+    Type: Number
+    Default: 180
+    Description: duracion del QR en segundos si el docente no indica otra
+  DuracionMaxima:
+    Type: Number
+    Default: 900
+    Description: duracion maxima permitida del QR en segundos
   ThrottleRate:
     Type: Number
     Default: 5
@@ -65,7 +86,6 @@ Resources:
 
   # ===========================================================================
   # SESIONES (dueno: A) - HU-01
-  # Lambda crear-sesion, rol IAM y ruta POST /sesiones: se agregan en semana 2
   # ===========================================================================
   TablaSesiones:
     Type: AWS::DynamoDB::Table
@@ -88,6 +108,64 @@ Resources:
         - {Key: Proyecto, Value: asistencia-qr}
         - {Key: Ambiente, Value: !Ref Ambiente}
 
+  LogsCrearSesion:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/gtn-${NombreEquipo}-crear-sesion"
+      RetentionInDays: 7
+      Tags:
+        - {Key: Curso, Value: GTN-2026-2}
+        - {Key: Equipo, Value: !Ref NombreEquipo}
+
+  FuncionCrearSesion:
+    Type: AWS::Lambda::Function
+    DependsOn: LogsCrearSesion
+    Properties:
+      FunctionName: !Sub "gtn-${NombreEquipo}-crear-sesion"
+      Runtime: python3.12
+      Architectures: [arm64]
+      MemorySize: 128
+      Timeout: 10
+      Handler: handler.lambda_handler
+      Role: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${NombreRolLambda}"
+      # Esta ruta la reemplaza "aws cloudformation package" (ver scripts/deploy.sh)
+      Code: ../build/crear_sesion
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref TablaSesiones
+          SCAN_BASE_URL: !Ref ScanBaseUrl
+          DEFAULT_DURATION: !Ref DuracionPorDefecto
+          MAX_DURATION: !Ref DuracionMaxima
+          TZ_OFFSET_HOURS: "-5"
+      Tags:
+        - {Key: Curso, Value: GTN-2026-2}
+        - {Key: Equipo, Value: !Ref NombreEquipo}
+        - {Key: Proyecto, Value: asistencia-qr}
+        - {Key: Ambiente, Value: !Ref Ambiente}
+
+  IntegracionCrearSesion:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref Api
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt FuncionCrearSesion.Arn
+      PayloadFormatVersion: "2.0"
+
+  RutaCrearSesion:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref Api
+      RouteKey: "POST /sesiones"
+      Target: !Sub "integrations/${IntegracionCrearSesion}"
+
+  PermisoApiCrearSesion:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref FuncionCrearSesion
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*/POST/sesiones"
+
   # ===========================================================================
   # REGISTRO DE ASISTENCIA (dueno: B) - HU-02
   # Tabla Asistencias, Lambda registrar-asistencia, ruta POST /asistencias
@@ -105,6 +183,9 @@ Outputs:
   ApiId:
     Description: Id de la API HTTP
     Value: !Ref Api
+  CrearSesionUrl:
+    Description: Endpoint del docente (POST)
+    Value: !Sub "${Api.ApiEndpoint}/sesiones"
   TablaSesionesNombre:
     Description: Nombre de la tabla Sesiones (B la usa para validar tokens)
     Value: !Ref TablaSesiones
