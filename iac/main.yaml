@@ -169,8 +169,193 @@ Resources:
   # ===========================================================================
   # REGISTRO DE ASISTENCIA (dueno: B) - HU-02
   # Tabla Asistencias, Lambda registrar-asistencia, ruta POST /asistencias
-  # ===========================================================================
+  # ===========================================================================   
+  TablaAsistencias:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "gtn-${NombreEquipo}-asistencias"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - {AttributeName: sessionId, AttributeType: S}
+        - {AttributeName: studentId, AttributeType: S}
+        - {AttributeName: courseId, AttributeType: S}
+        - {AttributeName: date, AttributeType: S}
+      KeySchema:
+        - {AttributeName: sessionId, KeyType: HASH}
+        - {AttributeName: studentId, KeyType: RANGE}
+      GlobalSecondaryIndexes:
+        - IndexName: curso-fecha-index
+          KeySchema:
+            - {AttributeName: courseId, KeyType: HASH}
+            - {AttributeName: date, KeyType: RANGE}
+          Projection:
+            ProjectionType: ALL
+      # Sin TTL (registros historicos) y sin PITR (decision de costo)
+      Tags:
+        - {Key: Curso, Value: GTN-2026-2}
+        - {Key: Equipo, Value: !Ref NombreEquipo}
+        - {Key: Proyecto, Value: asistencia-qr}
+        - {Key: Ambiente, Value: !Ref Ambiente}  
 
+
+  LogsRegistrarAsistencia:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/gtn-${NombreEquipo}-registrar-asistencia"
+      RetentionInDays: 7
+      Tags:
+        - {Key: Curso, Value: GTN-2026-2}
+        - {Key: Equipo, Value: !Ref NombreEquipo}
+ 
+  FuncionRegistrarAsistencia:
+    Type: AWS::Lambda::Function
+    DependsOn: LogsRegistrarAsistencia
+    Properties:
+      FunctionName: !Sub "gtn-${NombreEquipo}-registrar-asistencia"
+      Runtime: python3.12
+      Architectures: [arm64]
+      MemorySize: 128
+      Timeout: 5
+      Handler: index.handler
+      Role: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${NombreRolLambda}"
+      Environment:
+        Variables:
+          TABLA_SESIONES: !Ref TablaSesiones
+          TABLA_ASISTENCIAS: !Ref TablaAsistencias
+      Tags:
+        - {Key: Curso, Value: GTN-2026-2}
+        - {Key: Equipo, Value: !Ref NombreEquipo}
+        - {Key: Proyecto, Value: asistencia-qr}
+        - {Key: Ambiente, Value: !Ref Ambiente}
+      Code:
+        ZipFile: |
+          import base64
+          import json
+          import os
+          import re
+          import time
+ 
+          import boto3
+          from botocore.exceptions import ClientError
+ 
+          dynamodb = boto3.client("dynamodb")
+ 
+          TABLA_SESIONES = os.environ["TABLA_SESIONES"]
+          TABLA_ASISTENCIAS = os.environ["TABLA_ASISTENCIAS"]
+ 
+          # sessionId: token aleatorio urlsafe. studentId: codigo numerico de 6 a 12 digitos.
+          RE_SESSION = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+          RE_STUDENT = re.compile(r"^[0-9]{6,12}$")
+ 
+          HEADERS = {
+              "Content-Type": "application/json",
+              "Access-Control-Allow-Origin": "*",
+          }
+ 
+ 
+          def respuesta(codigo, cuerpo):
+              return {
+                  "statusCode": codigo,
+                  "headers": HEADERS,
+                  "body": json.dumps(cuerpo, ensure_ascii=False),
+              }
+ 
+ 
+          def handler(event, context):
+              # 1. Leer y validar el cuerpo
+              try:
+                  raw = event.get("body") or ""
+                  if event.get("isBase64Encoded"):
+                      raw = base64.b64decode(raw).decode("utf-8")
+                  datos = json.loads(raw)
+              except (ValueError, UnicodeDecodeError):
+                  return respuesta(400, {"status": "error", "mensaje": "Cuerpo JSON invalido"})
+ 
+              if not isinstance(datos, dict):
+                  return respuesta(400, {"status": "error", "mensaje": "Cuerpo JSON invalido"})
+ 
+              session_id = datos.get("sessionId")
+              student_id = datos.get("studentId")
+ 
+              if not isinstance(session_id, str) or not RE_SESSION.match(session_id):
+                  return respuesta(400, {"status": "error", "mensaje": "sessionId invalido"})
+              if not isinstance(student_id, str):
+                  return respuesta(400, {"status": "error", "mensaje": "studentId invalido"})
+              student_id = student_id.strip()
+              if not RE_STUDENT.match(student_id):
+                  return respuesta(400, {"status": "error", "mensaje": "studentId debe ser numerico (6 a 12 digitos)"})
+ 
+              # 2. Buscar la sesion (lectura consistente: el QR puede ser recien creado)
+              try:
+                  r = dynamodb.get_item(
+                      TableName=TABLA_SESIONES,
+                      Key={"sessionId": {"S": session_id}},
+                      ConsistentRead=True,
+                  )
+              except ClientError:
+                  print("ERROR get_item sesiones", flush=True)
+                  return respuesta(500, {"status": "error", "mensaje": "Error interno"})
+ 
+              sesion = r.get("Item")
+              if not sesion:
+                  return respuesta(404, {"status": "error", "mensaje": "Sesion inexistente"})
+ 
+              # 3. Validar expiracion con la hora del servidor (no depender del TTL de DynamoDB)
+              try:
+                  expires_at = int(sesion["expiresAt"]["N"])
+                  course_id = sesion["courseId"]
+                  fecha = sesion["date"]
+              except (KeyError, ValueError):
+                  print("ERROR sesion con formato inesperado", flush=True)
+                  return respuesta(500, {"status": "error", "mensaje": "Error interno"})
+ 
+              ahora = int(time.time())
+              if ahora >= expires_at:
+                  return respuesta(410, {"status": "error", "mensaje": "El QR ha expirado"})
+ 
+              # 4. Escritura condicional: evita duplicados incluso con solicitudes simultaneas
+              try:
+                  dynamodb.put_item(
+                      TableName=TABLA_ASISTENCIAS,
+                      Item={
+                          "sessionId": {"S": session_id},
+                          "studentId": {"S": student_id},
+                          "courseId": course_id,
+                          "date": fecha,
+                          "registeredAt": {"N": str(ahora)},
+                      },
+                      ConditionExpression="attribute_not_exists(sessionId)",
+                  )
+              except ClientError as e:
+                  if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                      return respuesta(409, {"status": "error", "mensaje": "Ya registraste tu asistencia en esta sesion"})
+                  print("ERROR put_item asistencias", flush=True)
+                  return respuesta(500, {"status": "error", "mensaje": "Error interno"})
+ 
+              return respuesta(200, {"status": "registrado"})
+ 
+  IntegracionRegistrarAsistencia:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref Api
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt FuncionRegistrarAsistencia.Arn
+      PayloadFormatVersion: "2.0"
+ 
+  RutaRegistrarAsistencia:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref Api
+      RouteKey: "POST /asistencias"
+      Target: !Sub "integrations/${IntegracionRegistrarAsistencia}"
+ 
+  PermisoApiRegistrarAsistencia:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref FuncionRegistrarAsistencia
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*/POST/asistencias"
   # ===========================================================================
   # REPORTES Y COSTOS (dueno: C) - HU-03 / HU-04
   # Bucket de reportes, EventBridge, Lambda generar-reporte, ruta GET /reportes
