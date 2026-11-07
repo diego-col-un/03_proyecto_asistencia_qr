@@ -166,6 +166,107 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*/POST/sesiones"
 
+  # ---------------------------------------------------------------------------
+  # HOSTING WEB (dueno: A): bucket S3 con las paginas del docente y el estudiante
+  # Acceso publico de solo lectura (website estatico). CloudFront se descarta
+  # por costo/complejidad frente al objetivo de <1 USD/mes.
+  # ---------------------------------------------------------------------------
+  BucketWeb:
+    Type: AWS::S3::Bucket
+    # El contenido se sube con "aws s3 sync" en deploy.sh (no desde CloudFormation).
+    Properties:
+      BucketName: !Sub "gtn-${NombreEquipo}-web-${AWS::AccountId}"
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerPreferred
+      # Se desactiva el bloqueo de acceso publico para poder servir el sitio.
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: index.html
+      Tags:
+        - {Key: Curso, Value: GTN-2026-2}
+        - {Key: Equipo, Value: !Ref NombreEquipo}
+        - {Key: Proyecto, Value: asistencia-qr}
+        - {Key: Ambiente, Value: !Ref Ambiente}
+
+  PoliticaBucketWeb:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref BucketWeb
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: LecturaPublica
+            Effect: Allow
+            Principal: "*"
+            Action: "s3:GetObject"
+            Resource: !Sub "${BucketWeb.Arn}/*"
+
+  # --- Borrado limpio: Lambda + custom resource que vacia el bucket web ---
+  # Sin esto, delete-stack falla con BucketNotEmpty. Solo se ejecuta durante
+  # operaciones de CloudFormation (crear/actualizar/borrar), no en uso normal.
+  LogsVaciarBucketWeb:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/gtn-${NombreEquipo}-vaciar-bucket-web"
+      RetentionInDays: 7
+      Tags:
+        - {Key: Curso, Value: GTN-2026-2}
+        - {Key: Equipo, Value: !Ref NombreEquipo}
+
+  FuncionVaciarBucketWeb:
+    Type: AWS::Lambda::Function
+    DependsOn: LogsVaciarBucketWeb
+    Properties:
+      FunctionName: !Sub "gtn-${NombreEquipo}-vaciar-bucket-web"
+      Runtime: python3.12
+      Architectures: [arm64]
+      MemorySize: 128
+      Timeout: 120
+      Handler: index.handler
+      Role: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${NombreRolLambda}"
+      Environment:
+        Variables:
+          BUCKET: !Ref BucketWeb
+      Tags:
+        - {Key: Curso, Value: GTN-2026-2}
+        - {Key: Equipo, Value: !Ref NombreEquipo}
+        - {Key: Proyecto, Value: asistencia-qr}
+        - {Key: Ambiente, Value: !Ref Ambiente}
+      Code:
+        ZipFile: |
+          import os
+          import boto3
+          import cfnresponse
+
+          s3 = boto3.resource("s3")
+
+          def handler(event, context):
+              # Solo actuamos al borrar el stack; crear/actualizar responden OK.
+              try:
+                  if event["RequestType"] == "Delete":
+                      bucket = s3.Bucket(os.environ["BUCKET"])
+                      bucket.object_versions.delete()
+                      bucket.objects.all().delete()
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+              except Exception as exc:  # noqa: BLE001
+                  print(f"ERROR al vaciar el bucket: {type(exc).__name__}: {exc}")
+                  # Respondemos SUCCESS en Delete para no dejar el stack atascado.
+                  estado = cfnresponse.SUCCESS if event.get("RequestType") == "Delete" else cfnresponse.FAILED
+                  cfnresponse.send(event, context, estado, {})
+
+  VaciarBucketWeb:
+    Type: AWS::CloudFormation::CustomResource
+    # Debe correr antes de que CloudFormation intente borrar el bucket.
+    DependsOn: BucketWeb
+    Properties:
+      ServiceToken: !GetAtt FuncionVaciarBucketWeb.Arn
+
   # ===========================================================================
   # REGISTRO DE ASISTENCIA (dueno: B) - HU-02
   # Tabla Asistencias, Lambda registrar-asistencia, ruta POST /asistencias
@@ -377,3 +478,15 @@ Outputs:
   TablaSesionesArn:
     Description: ARN de la tabla Sesiones (para politicas IAM de B)
     Value: !GetAtt TablaSesiones.Arn
+  BucketWebNombre:
+    Description: Nombre del bucket S3 que hospeda las paginas web
+    Value: !Ref BucketWeb
+  WebUrlBase:
+    Description: URL base del sitio web estatico (S3 website)
+    Value: !GetAtt BucketWeb.WebsiteURL
+  WebUrlDocente:
+    Description: URL de la pagina del docente
+    Value: !Sub "${BucketWeb.WebsiteURL}/docente/index.html"
+  WebUrlEstudiante:
+    Description: URL de la pagina del estudiante (usar como ScanBaseUrl)
+    Value: !Sub "${BucketWeb.WebsiteURL}/estudiante/index.html"
