@@ -210,18 +210,14 @@ Resources:
   # --- Borrado limpio: Lambda + custom resource que vacia el bucket web ---
   # Sin esto, delete-stack falla con BucketNotEmpty. Solo se ejecuta durante
   # operaciones de CloudFormation (crear/actualizar/borrar), no en uso normal.
-  LogsVaciarBucketWeb:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/lambda/gtn-${NombreEquipo}-vaciar-bucket-web"
-      RetentionInDays: 7
-      Tags:
-        - {Key: Curso, Value: GTN-2026-2}
-        - {Key: Equipo, Value: !Ref NombreEquipo}
-
+  #
+  # NOTA: a proposito NO declaramos su LogGroup en CloudFormation. Esta Lambda
+  # escribe logs mientras el stack se esta borrando, lo que hace que Lambda
+  # recree el LogGroup justo despues de que CloudFormation lo elimine. Ese
+  # LogGroup huerfano rompe el siguiente deploy (EarlyValidation: ya existe).
+  # Dejando que Lambda lo gestione se evita el conflicto; su volumen es minimo.
   FuncionVaciarBucketWeb:
     Type: AWS::Lambda::Function
-    DependsOn: LogsVaciarBucketWeb
     Properties:
       FunctionName: !Sub "gtn-${NombreEquipo}-vaciar-bucket-web"
       Runtime: python3.12
