@@ -44,6 +44,17 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM \
   --region "$REGION"
 
+echo ">> Subiendo paginas web al bucket de hosting"
+BUCKET_WEB="$(aws cloudformation describe-stacks --stack-name "$STACK" --region "$REGION" \
+  --query "Stacks[0].Outputs[?OutputKey=='BucketWebNombre'].OutputValue" --output text)"
+if [ -n "$BUCKET_WEB" ] && [ "$BUCKET_WEB" != "None" ]; then
+  # --delete mantiene el bucket en sincronia con app/web (borra lo que ya no exista).
+  aws s3 sync app/web "s3://${BUCKET_WEB}" --delete \
+    --cache-control "no-cache" --region "$REGION"
+else
+  echo "   (aviso: no se encontro el output BucketWebNombre; se omite la subida)"
+fi
+
 echo ">> Outputs:"
 aws cloudformation describe-stacks --stack-name "$STACK" --region "$REGION" \
   --query "Stacks[0].Outputs" --output table
