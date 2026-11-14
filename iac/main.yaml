@@ -45,6 +45,16 @@ Parameters:
     Type: Number
     Default: 10
     Description: rafaga maxima de solicitudes en la API
+  AsistenciasThrottleRate:
+    Type: Number
+    Default: 50
+    Description: >
+      solicitudes por segundo para POST /asistencias. Mas alto que el general
+      porque todo el grupo escanea el QR casi a la vez (40 a 100 estudiantes).
+  AsistenciasThrottleBurst:
+    Type: Number
+    Default: 100
+    Description: rafaga maxima para POST /asistencias
 
 Resources:
   # ===========================================================================
@@ -71,6 +81,7 @@ Resources:
 
   ApiStage:
     Type: AWS::ApiGatewayV2::Stage
+    DependsOn: RutaRegistrarAsistencia
     Properties:
       ApiId: !Ref Api
       StageName: $default
@@ -78,6 +89,11 @@ Resources:
       DefaultRouteSettings:
         ThrottlingRateLimit: !Ref ThrottleRate
         ThrottlingBurstLimit: !Ref ThrottleBurst
+      # Override de B: el registro llega en rafaga (todo el grupo a la vez)
+      RouteSettings:
+        "POST /asistencias":
+          ThrottlingRateLimit: !Ref AsistenciasThrottleRate
+          ThrottlingBurstLimit: !Ref AsistenciasThrottleBurst
       Tags:
         Curso: GTN-2026-2
         Equipo: !Ref NombreEquipo

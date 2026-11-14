@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Registrar asistencia</title>
+<style>
+  :root{--bg:#f5f6f8;--card:#fff;--tx:#1b1f24;--mut:#5b6572;--bd:#d0d5dc;--pri:#1f5fd1;--ok:#0f7b3f;--okbg:#e3f5ea;--warn:#8a5a00;--warnbg:#fff1d6;--err:#a3261b;--errbg:#fde7e4}
+  @media (prefers-color-scheme:dark){:root{--bg:#14171c;--card:#1e232a;--tx:#eceff3;--mut:#9aa5b3;--bd:#39414c;--pri:#6ea0ff;--ok:#6fd49a;--okbg:#14301f;--warn:#f0c066;--warnbg:#33290f;--err:#ff9a90;--errbg:#3a1a17}}
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px;background:var(--bg);color:var(--tx);font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  main{width:100%;max-width:420px;background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:24px}
+  h1{font-size:1.35rem;margin:0 0 4px}
+  p.sub{margin:0 0 20px;color:var(--mut)}
+  label{display:block;font-weight:600;margin-bottom:6px}
+  input{width:100%;padding:14px;font-size:1.1rem;border:1px solid var(--bd);border-radius:10px;background:var(--bg);color:var(--tx)}
+  input:focus{outline:3px solid var(--pri);outline-offset:1px}
+  button{width:100%;margin-top:14px;padding:14px;font-size:1.05rem;font-weight:600;border:0;border-radius:10px;background:var(--pri);color:#fff;cursor:pointer}
+  button:disabled{opacity:.6;cursor:default}
+  #msg{margin-top:18px;padding:14px;border-radius:10px;display:none}
+  #msg.ok{display:block;background:var(--okbg);color:var(--ok)}
+  #msg.warn{display:block;background:var(--warnbg);color:var(--warn)}
+  #msg.err{display:block;background:var(--errbg);color:var(--err)}
+  #msg strong{display:block;margin-bottom:2px}
+</style>
+</head>
+<body>
+<main>
+  <h1>Registrar asistencia</h1>
+  <p class="sub">Ingresa tu código estudiantil para quedar registrado en esta sesión.</p>
+  <div id="form">
+    <label for="sid">Código estudiantil</label>
+    <input id="sid" inputmode="numeric" autocomplete="off" maxlength="12" placeholder="Ej.: 1000000001">
+    <button id="btn" type="button">Registrar asistencia</button>
+  </div>
+  <div id="msg" role="status" aria-live="polite"></div>
+</main>
+<script src="config.js"></script>
+<script>
+(function () {
+  var API = ((window.APP_CONFIG || {}).API_URL || "").replace(/\/+$/, "");
+  var session = new URLSearchParams(location.search).get("s") || "";
+  var $ = function (id) { return document.getElementById(id); };
+  var input = $("sid"), btn = $("btn"), msg = $("msg");
+
+  function show(kind, title, text) {
+    msg.className = kind;
+    msg.innerHTML = "";
+    var s = document.createElement("strong");
+    s.textContent = title;
+    msg.appendChild(s);
+    msg.appendChild(document.createTextNode(text));
+  }
+
+  try { input.value = localStorage.getItem("studentId") || ""; } catch (e) {}
+
+  if (!session) {
+    $("form").style.display = "none";
+    show("err", "QR no válido", "Escanea de nuevo el código QR que muestra tu docente.");
+    return;
+  }
+  if (!API) {
+    $("form").style.display = "none";
+    show("err", "Página sin configurar", "Falta la URL de la API en config.js. Avisa a tu docente.");
+    return;
+  }
+
+  async function registrar() {
+    var id = input.value.replace(/\s+/g, "");
+    if (!/^[0-9]{6,12}$/.test(id)) {
+      show("warn", "Revisa tu código", "Debe ser numérico, de 6 a 12 dígitos.");
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = "Registrando...";
+    var ctrl = new AbortController();
+    var t = setTimeout(function () { ctrl.abort(); }, 10000);
+    try {
+      var r = await fetch(API + "/asistencias", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: session, studentId: id }),
+        signal: ctrl.signal
+      });
+      if (r.status === 200) {
+        try { localStorage.setItem("studentId", id); } catch (e) {}
+        show("ok", "¡Asistencia registrada!", "Ya quedaste registrado en esta sesión. Puedes cerrar la página.");
+        $("form").style.display = "none";
+      } else if (r.status === 409) {
+        show("warn", "Ya estabas registrado", "Tu asistencia en esta sesión ya fue registrada antes.");
+      } else if (r.status === 410) {
+        show("err", "El QR venció", "Pide a tu docente que genere uno nuevo y escanéalo de nuevo.");
+      } else if (r.status === 404) {
+        show("err", "Sesión no encontrada", "Este QR no corresponde a una sesión activa. Escanea el de tu docente.");
+      } else if (r.status === 400) {
+        show("warn", "Datos no válidos", "Revisa tu código estudiantil e inténtalo otra vez.");
+      } else if (r.status === 429) {
+        show("warn", "Muchas solicitudes", "Espera unos segundos e inténtalo de nuevo.");
+      } else {
+        show("err", "Error del servidor", "No se pudo registrar. Inténtalo de nuevo en un momento.");
+      }
+    } catch (e) {
+      show("err", "Sin conexión", "No pudimos contactar al servidor. Revisa tu internet e inténtalo de nuevo.");
+    } finally {
+      clearTimeout(t);
+      btn.disabled = false;
+      btn.textContent = "Registrar asistencia";
+    }
+  }
+
+  btn.addEventListener("click", registrar);
+  input.addEventListener("keydown", function (e) { if (e.key === "Enter") registrar(); });
+})();
+</script>
+</body>
+</html>

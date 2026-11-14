@@ -49,11 +49,11 @@ llamar() { # $1=descripcion  $2=codigo esperado  $3=cuerpo JSON
   echo "[$marca] $1 -> $codigo (esperado $2) $(cat /tmp/resp.json)"
 }
 
-llamar "Registro valido"    200 "{\"sessionId\":\"$OK_ID\",\"studentId\":\"1055751123\"}"
-llamar "Duplicado"          409 "{\"sessionId\":\"$OK_ID\",\"studentId\":\"1055751123\"}"
-llamar "Otro estudiante"    200 "{\"sessionId\":\"$OK_ID\",\"studentId\":\"1055751124\"}"
-llamar "Sesion inexistente" 404 '{"sessionId":"no-existe-0123456789abcdef","studentId":"1055751123"}'
-llamar "QR vencido"         410 "{\"sessionId\":\"$EXP_ID\",\"studentId\":\"1055751123\"}"
+llamar "Registro valido"    200 "{\"sessionId\":\"$OK_ID\",\"studentId\":\"1000000001\"}"
+llamar "Duplicado"          409 "{\"sessionId\":\"$OK_ID\",\"studentId\":\"1000000001\"}"
+llamar "Otro estudiante"    200 "{\"sessionId\":\"$OK_ID\",\"studentId\":\"1000000002\"}"
+llamar "Sesion inexistente" 404 '{"sessionId":"no-existe-0123456789abcdef","studentId":"1000000001"}'
+llamar "QR vencido"         410 "{\"sessionId\":\"$EXP_ID\",\"studentId\":\"1000000001\"}"
 llamar "studentId invalido" 400 "{\"sessionId\":\"$OK_ID\",\"studentId\":\"abc\"}"
 llamar "Cuerpo no es JSON"  400 'esto no es json'
 

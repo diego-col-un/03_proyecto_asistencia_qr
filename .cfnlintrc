@@ -1,0 +1,5 @@
+templates:
+  - iac/main.yaml
+ignore_checks:
+  # Code: ../build/... solo es valido tras "aws cloudformation package" (scripts/deploy.sh)
+  - W3002
